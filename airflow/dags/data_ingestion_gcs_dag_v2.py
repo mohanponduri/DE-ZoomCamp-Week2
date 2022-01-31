@@ -7,26 +7,27 @@ from airflow.operators.bash import BashOperator
 from airflow.operators.python import PythonOperator
 
 from google.cloud import storage
-from airflow.providers.google.cloud.operators.bigquery import BigQueryCreateExternalTableOperator
+from airflow.providers.google.cloud.operators.bigquery import (
+    BigQueryCreateExternalTableOperator,
+)
+from datetime import datetime
 import pyarrow.csv as pv
 import pyarrow.parquet as pq
 
 PROJECT_ID = os.environ.get("GCP_PROJECT_ID")
 BUCKET = os.environ.get("GCP_GCS_BUCKET")
 
-dataset_file = "yellow_tripdata_2021-01.csv"
-dataset_url = f"https://s3.amazonaws.com/nyc-tlc/trip+data/{dataset_file}"
+
 path_to_local_home = os.environ.get("AIRFLOW_HOME", "/opt/airflow/")
-parquet_file = dataset_file.replace('.csv', '.parquet')
-BIGQUERY_DATASET = os.environ.get("BIGQUERY_DATASET", 'trips_data_all')
+BIGQUERY_DATASET = os.environ.get("BIGQUERY_DATASET", "trips_data_all")
 
 
 def format_to_parquet(src_file):
-    if not src_file.endswith('.csv'):
+    if not src_file.endswith(".csv"):
         logging.error("Can only accept source files in CSV format, for the moment")
         return
     table = pv.read_csv(src_file)
-    pq.write_table(table, src_file.replace('.csv', '.parquet'))
+    pq.write_table(table, src_file.replace(".csv", ".parquet"))
 
 
 # NOTE: takes 20 mins, at an upload speed of 800kbps. Faster if your internet has a better upload speed
@@ -53,24 +54,30 @@ def upload_to_gcs(bucket, object_name, local_file):
 
 default_args = {
     "owner": "airflow",
-    "start_date": days_ago(1),
+    "start_date": datetime(2019, 1, 1),
     "depends_on_past": False,
     "retries": 1,
 }
 
 # NOTE: DAG declaration - using a Context Manager (an implicit way)
 with DAG(
-    dag_id="data_ingestion_gcs_dag",
-    schedule_interval="@daily",
+    dag_id="data_ingestion_gcs_dag_v2",
+    schedule_interval="@monthly",
     default_args=default_args,
-    catchup=False,
+    catchup=True,
     max_active_runs=2,
-    tags=['dtc-de'],
+    tags=["dtc-de"],
 ) as dag:
+
+    EXEC_DATE = '{{ macros.ds_format(ds, "%Y-%m-%d", "%Y-%m") }}'
+    dataset_file = f"yellow_tripdata_{EXEC_DATE}.csv"
+    dataset_url = f"https://s3.amazonaws.com/nyc-tlc/trip+data/{dataset_file}"
+    parquet_file = dataset_file.replace(".csv", ".parquet")
 
     download_dataset_task = BashOperator(
         task_id="download_dataset_task",
-        bash_command=f"curl -sS {dataset_url} > {path_to_local_home}/{dataset_file}"
+        # bash_command=f"""echo {EXEC_DATE}"""
+        bash_command=f"curl -sSLf {dataset_url} > {path_to_local_home}/{dataset_file}",
     )
 
     format_to_parquet_task = PythonOperator(
@@ -107,4 +114,15 @@ with DAG(
         },
     )
 
-    download_dataset_task >> format_to_parquet_task >> local_to_gcs_task >> bigquery_external_table_task
+    remove_temp_task = BashOperator(
+        task_id="remove_temp_files_task",
+        bash_command=f"rm {path_to_local_home}/{dataset_file} {path_to_local_home}/{parquet_file}",
+    )
+
+    (
+        download_dataset_task
+        >> format_to_parquet_task
+        >> local_to_gcs_task
+        >> bigquery_external_table_task
+        >> remove_temp_task
+    )

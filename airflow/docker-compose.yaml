@@ -67,6 +67,7 @@ x-airflow-common:
     - ./dags:/opt/airflow/dags
     - ./logs:/opt/airflow/logs
     - ./plugins:/opt/airflow/plugins
+    - ~/.google/credentials/:/.google/credentials:ro
 
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
@@ -84,7 +85,7 @@ services:
       POSTGRES_PASSWORD: airflow
       POSTGRES_DB: airflow
     volumes:
-      - postgres-db-volume:/var/lib/postgresql/data
+      - ./postgres-db-volume:/var/lib/postgresql/data
     healthcheck:
       test: [ "CMD", "pg_isready", "-U", "airflow" ]
       interval: 5s
